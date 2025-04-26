@@ -235,7 +235,6 @@ fn append_to_csv(file_path: &str, entry: &LogEntry) -> Result<(), AppError> {
     let file_exists = Path::new(file_path).exists();
 
     let file = OpenOptions::new()
-        .write(true)
         .create(true)
         .append(true)
         .open(file_path)?;
