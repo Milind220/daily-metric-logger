@@ -197,6 +197,11 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
         for result in rdr.records() {
             let record = result?;
             if let Some(ts_str) = record.get(0) {
+                if ts_str.trim() == "timestamp" {
+                    // Safety check: Skip if we somehow got the header row despite has_headers(true)
+                    eprintln!("Warning: Skipping potential header row accidentally read as data.");
+                    continue;
+                }
                 // Timestamp is the first column (index 0)
                 // Try parsing both with and without fractional seconds for flexibility
                 let dt = DateTime::parse_from_rfc3339(ts_str)
