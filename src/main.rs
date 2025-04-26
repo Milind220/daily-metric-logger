@@ -44,6 +44,7 @@ enum AppError {
 struct CsvInfo {
     first_entry_date: Option<NaiveDate>,
     last_entry_date: Option<NaiveDate>,
+    workout_logged_today: bool,
 }
 
 // --- Initialize the theme once ---
@@ -118,10 +119,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let focus = ask_rating("Focus (1=Low, 10=High)")?;
     let intelligence = ask_rating("Perceived Intelligence (1=Low, 10=High)")?; // Wording change for clarity
 
-    let workout_today = Confirm::with_theme(&*THEME)
-        .with_prompt("Did you (or will you) workout today?")
-        .interact()
-        .map_err(|_| AppError::DialogCancelled)?; // Handle potential cancel
+    let workout_today: bool;
+
+    if !csv_info.workout_logged_today {
+        // Only ask if no 'yes' workout has been logged today yet
+        println!("{}", "Checking workout status...".blue()); // Info message
+        workout_today = Confirm::with_theme(&*THEME)
+            .with_prompt("Did you (or will you) workout today?")
+            .interact()
+            .map_err(|_| AppError::DialogCancelled)?; // Handle potential cancel
+        if workout_today {
+            println!("{}", " -> Awesome!".yellow());
+        } else {
+            println!("{}", " -> Ok, maybe later.".dimmed());
+        }
+    } else {
+        // A 'yes' was already logged today, so don't ask again.
+        println!(
+            "{}",
+            "Workout already logged as 'yes' earlier today.".dimmed()
+        );
+        workout_today = true; // Assume 'true' for this follow-up entry as well
+    }
 
     let remarks: String = Input::with_theme(&*THEME)
         .with_prompt("Any remarks?")
@@ -189,44 +208,86 @@ fn ask_rating(prompt: &str) -> Result<u8, AppError> {
 fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
     let mut first_date: Option<NaiveDate> = None;
     let mut last_date: Option<NaiveDate> = None;
+    let mut workout_today_logged = false; // Initialize flag for the new logic
+
+    let today = Utc::now().date_naive(); // Get today's date once
 
     if Path::new(file_path).exists() {
         let file = File::open(file_path)?;
-        let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true) // Expect a header row
+            .from_reader(file);
+
+        // Define the expected header name for robustness check
+        const TIMESTAMP_HEADER: &str = "timestamp";
+        // Define the column index for workout_today (0-based)
+        const WORKOUT_COLUMN_INDEX: usize = 9;
 
         for result in rdr.records() {
-            let record = result?;
+            let record = match result {
+                Ok(rec) => rec,
+                Err(e) => {
+                    eprintln!("Warning: Skipping corrupted CSV record: {}", e);
+                    continue; // Skip this record
+                }
+            };
+
+            // Get timestamp string
             if let Some(ts_str) = record.get(0) {
-                if ts_str.trim() == "timestamp" {
-                    // Safety check: Skip if we somehow got the header row despite has_headers(true)
+                // Safety check: Skip if we somehow got the header row
+                if ts_str.trim() == TIMESTAMP_HEADER {
                     eprintln!("Warning: Skipping potential header row accidentally read as data.");
                     continue;
                 }
-                // Timestamp is the first column (index 0)
-                // Try parsing both with and without fractional seconds for flexibility
+
+                // Parse timestamp
                 let dt = DateTime::parse_from_rfc3339(ts_str)
-                    .or_else(|_| DateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%.fZ")) // Handle potential variations
-                    .map(|dt| dt.with_timezone(&Utc)) // Ensure it's UTC
+                    .map(|dt| dt.with_timezone(&Utc))
                     .map_err(|e| {
-                        eprintln!("Warning: Could not parse timestamp '{}': {}", ts_str, e); // Log warning
-                        AppError::DateParseError(e) // Propagate error if needed, though we could also skip the record
-                    })?;
+                        eprintln!(
+                            "Warning: Could not parse timestamp '{}' in data row: {}. Skipping record.", // Changed log level
+                            ts_str, e
+                        );
+                        // Don't return AppError here, just skip the record for date finding purposes
+                        // AppError::DateParseError(e)
+                    });
 
-                let current_date = dt.date_naive();
+                // Proceed only if date parsing was successful
+                if let Ok(dt) = dt {
+                    let current_date = dt.date_naive();
 
-                // Update first date
-                if first_date.is_none() || current_date < first_date.unwrap() {
-                    first_date = Some(current_date);
-                }
-                // Update last date (always override with the latest processed)
-                last_date = Some(current_date);
+                    // Update first date logic
+                    if first_date.is_none() || current_date < first_date.unwrap() {
+                        first_date = Some(current_date);
+                    }
+                    // Update last date (always override with the latest processed valid record)
+                    last_date = Some(current_date);
+
+                    // --- New logic: Check workout status for today's entries ---
+                    if current_date == today {
+                        if let Some(workout_str) = record.get(WORKOUT_COLUMN_INDEX) {
+                            // Check if workout was logged as 'true' case-insensitively
+                            if workout_str.trim().eq_ignore_ascii_case("true") {
+                                workout_today_logged = true;
+                                // Optimization note: We could potentially break early if we only needed this flag,
+                                // but we still need to loop through all records to find the *last* date reliably.
+                            }
+                        } else {
+                            eprintln!("Warning: Record for today ({}) is missing workout column (index {}).", current_date, WORKOUT_COLUMN_INDEX);
+                        }
+                    }
+                    // --- End of new logic ---
+                } // End if Ok(dt)
+            } else {
+                eprintln!("Warning: Skipping record with missing timestamp column.");
             }
-        }
+        } // End for loop
     }
 
     Ok(CsvInfo {
         first_entry_date: first_date,
         last_entry_date: last_date,
+        workout_logged_today: workout_today_logged, // Return the determined flag
     })
 }
 
