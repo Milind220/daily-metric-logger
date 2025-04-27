@@ -16,7 +16,8 @@ const GOAL_DAYS: i64 = 30;
 struct LogEntry {
     timestamp: String, // Store as ISO 8601 string for simplicity in CSV
     day_count: i64,
-    sleep_hours: Option<u8>, // Optional because it's asked only once a day
+    sleep_hours: Option<f32>, // Optional because it's asked only once a day
+    sleep_quality: Option<f32>, // Optional because it's asked only once a day
     sleepiness: u8,
     zonkedness: u8,
     energy: u8,
@@ -84,16 +85,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{}", "-".repeat(40).cyan());
 
     // --- Collect Data ---
-    let mut sleep_hours: Option<u8> = None;
+    let mut sleep_hours: Option<f32> = None;
+    let mut sleep_quality: Option<f32> = None;
     if is_first_entry_today {
         println!("{}", "First log of the day!".bright_blue());
         sleep_hours = Some(
             Input::with_theme(&*THEME)
                 .with_prompt("How many hours did you sleep last night?")
                 .validate_with(|input: &String| -> Result<(), String> {
-                    match input.parse::<u8>() {
+                    match input.parse::<f32>() {
                         Ok(val) => {
-                            if val <= 12 {
+                            if val <= 12.0 {
                                 // Max 12 hours, min is implicitly 0 for u8
                                 Ok(())
                             } else {
@@ -106,7 +108,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .default("8".to_string()) // Sensible default
                 .interact_text()
                 .map_err(|_| AppError::DialogCancelled)? // Handle potential cancel
-                .parse::<u8>()?, // Parse validated input
+                .parse::<f32>()?, // Parse validated input
+        );
+        sleep_quality = Some(
+            Input::with_theme(&*THEME)
+                .with_prompt("Rate sleep quality (1.0=Poor, 10.0=Excellent)")
+                .validate_with(|input: &String| -> Result<(), String> {
+                    match input.parse::<f32>() {
+                        Ok(val) => {
+                            if (1.0..=10.0).contains(&val) {
+                                Ok(())
+                            } else {
+                                Err("Please enter a value between 1.0 and 10.0".to_string())
+                            }
+                        }
+                        Err(_) => Err("Please enter a valid float (e.g. 7.5)".to_string()),
+                    }
+                })
+                .default("7.5".to_string())
+                .interact_text()
+                .map_err(|_| AppError::DialogCancelled)?
+                .parse::<f32>()?, // Parse validated input
         );
     } else {
         println!("{}", "Follow-up log for today.".dimmed());
@@ -155,6 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         timestamp: timestamp.to_rfc3339(), // ISO 8601 format
         day_count,
         sleep_hours,
+        sleep_quality,
         sleepiness,
         zonkedness,
         energy,
@@ -221,7 +244,7 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
         // Define the expected header name for robustness check
         const TIMESTAMP_HEADER: &str = "timestamp";
         // Define the column index for workout_today (0-based)
-        const WORKOUT_COLUMN_INDEX: usize = 9;
+        const WORKOUT_COLUMN_INDEX: usize = 10;
 
         for result in rdr.records() {
             let record = match result {
@@ -312,6 +335,7 @@ fn append_to_csv(file_path: &str, entry: &LogEntry) -> Result<(), AppError> {
             "timestamp",
             "day_count",
             "sleep_hours",
+            "sleep_quality",
             "sleepiness",
             "zonkedness",
             "energy",
