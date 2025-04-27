@@ -20,6 +20,7 @@ struct LogEntry {
     sleep_quality: Option<f32>, // Optional because it's asked only once a day
     sleepiness: u8,
     zonkedness: u8,
+    mid_vibes: u8,
     energy: u8,
     strength: u8,
     focus: u8,
@@ -46,6 +47,8 @@ struct CsvInfo {
     first_entry_date: Option<NaiveDate>,
     last_entry_date: Option<NaiveDate>,
     workout_logged_today: bool,
+    last_sleep_hours: Option<f32>,
+    last_sleep_quality: Option<f32>,
 }
 
 // --- Initialize the theme once ---
@@ -85,8 +88,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{}", "-".repeat(40).cyan());
 
     // --- Collect Data ---
-    let mut sleep_hours: Option<f32> = None;
-    let mut sleep_quality: Option<f32> = None;
+    let sleep_hours: Option<f32>;
+    let sleep_quality: Option<f32>;
     if is_first_entry_today {
         println!("{}", "First log of the day!".bright_blue());
         sleep_hours = Some(
@@ -132,10 +135,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     } else {
         println!("{}", "Follow-up log for today.".dimmed());
+        // Copy sleep values from last entry
+        sleep_hours = csv_info.last_sleep_hours;
+        sleep_quality = csv_info.last_sleep_quality;
+        if sleep_hours.is_some() || sleep_quality.is_some() {
+            println!(
+                "{}",
+                format!(
+                    "Copied sleep data: {} hours, quality rating: {}", 
+                    sleep_hours.map_or("N/A".to_string(), |h| h.to_string()),
+                    sleep_quality.map_or("N/A".to_string(), |q| q.to_string())
+                ).dimmed()
+            );
+        }
     }
 
     let sleepiness = ask_rating("Sleepiness/Grogginess (1=Low, 10=High)")?;
     let zonkedness = ask_rating("Zonked-ness (1=Low, 10=High)")?;
+    let mid_vibes = ask_rating("Mid Vibes (1=Low, 10=High)")?;
     let energy = ask_rating("Energy Levels (1=Low, 10=High)")?;
     let strength = ask_rating("Physical Strength (1=Low, 10=High)")?;
     let focus = ask_rating("Focus (1=Low, 10=High)")?;
@@ -180,6 +197,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         sleep_quality,
         sleepiness,
         zonkedness,
+        mid_vibes,
         energy,
         strength,
         focus,
@@ -232,6 +250,8 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
     let mut first_date: Option<NaiveDate> = None;
     let mut last_date: Option<NaiveDate> = None;
     let mut workout_today_logged = false; // Initialize flag for the new logic
+    let mut last_sleep_hours: Option<f32> = None;
+    let mut last_sleep_quality: Option<f32> = None;
 
     let today = Utc::now().date_naive(); // Get today's date once
 
@@ -243,8 +263,10 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
 
         // Define the expected header name for robustness check
         const TIMESTAMP_HEADER: &str = "timestamp";
-        // Define the column index for workout_today (0-based)
-        const WORKOUT_COLUMN_INDEX: usize = 10;
+        // Define column indices (0-based)
+        const WORKOUT_COLUMN_INDEX: usize = 11;
+        const SLEEP_HOURS_COLUMN_INDEX: usize = 2; 
+        const SLEEP_QUALITY_COLUMN_INDEX: usize = 3;
 
         for result in rdr.records() {
             let record = match result {
@@ -286,7 +308,7 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
                     // Update last date (always override with the latest processed valid record)
                     last_date = Some(current_date);
 
-                    // --- New logic: Check workout status for today's entries ---
+                    // --- Check workout status for today's entries ---
                     if current_date == today {
                         if let Some(workout_str) = record.get(WORKOUT_COLUMN_INDEX) {
                             // Check if workout was logged as 'true' case-insensitively
@@ -299,7 +321,27 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
                             eprintln!("Warning: Record for today ({}) is missing workout column (index {}).", current_date, WORKOUT_COLUMN_INDEX);
                         }
                     }
-                    // --- End of new logic ---
+                    
+                    // Update sleep values from the most recent entry
+                    if last_date.is_none() || current_date >= last_date.unwrap() {
+                        // Try to read sleep hours
+                        if let Some(sleep_hours_str) = record.get(SLEEP_HOURS_COLUMN_INDEX) {
+                            if !sleep_hours_str.trim().is_empty() {
+                                if let Ok(hours) = sleep_hours_str.trim().parse::<f32>() {
+                                    last_sleep_hours = Some(hours);
+                                }
+                            }
+                        }
+                        
+                        // Try to read sleep quality
+                        if let Some(sleep_quality_str) = record.get(SLEEP_QUALITY_COLUMN_INDEX) {
+                            if !sleep_quality_str.trim().is_empty() {
+                                if let Ok(quality) = sleep_quality_str.trim().parse::<f32>() {
+                                    last_sleep_quality = Some(quality);
+                                }
+                            }
+                        }
+                    }
                 } // End if Ok(dt)
             } else {
                 eprintln!("Warning: Skipping record with missing timestamp column.");
@@ -310,7 +352,9 @@ fn read_csv_info(file_path: &str) -> Result<CsvInfo, AppError> {
     Ok(CsvInfo {
         first_entry_date: first_date,
         last_entry_date: last_date,
-        workout_logged_today: workout_today_logged, // Return the determined flag
+        workout_logged_today: workout_today_logged,
+        last_sleep_hours,
+        last_sleep_quality,
     })
 }
 
@@ -338,6 +382,7 @@ fn append_to_csv(file_path: &str, entry: &LogEntry) -> Result<(), AppError> {
             "sleep_quality",
             "sleepiness",
             "zonkedness",
+            "mid_vibes",
             "energy",
             "strength",
             "focus",
